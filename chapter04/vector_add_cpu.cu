@@ -1,6 +1,6 @@
 #include "../common/book.h"
 
-#define N 10
+#define N 50000
 
 void add(int* a, int* b, int* c) {
   int tid = 0;
