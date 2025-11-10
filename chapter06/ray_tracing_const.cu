@@ -30,6 +30,9 @@ struct Sphere {
   }
 };
 
+__constant__ Sphere s[SPHERES]; // CONSTANT MEMORY for the list of Spheres on GPU
+
+
 __global__ void kernel(Sphere *s, unsigned char* ptr) {
   // map from threadIdx/blockIdx to pixel position (x,y)
   int x = threadIdx.x + blockIdx.x*blockDim.x;
@@ -68,12 +71,9 @@ int main() {
 
   CPUBitmap bitmap(DIM, DIM);
   unsigned char *dev_bitmap;
-  Sphere *s; // for the list of Spheres on GPU
 
   // allocate memory on GPU for the output bitmap
   HANDLE_ERROR(cudaMalloc((void**)&dev_bitmap, bitmap.image_size()));
-  // allocate memory on GPU for the Sphere dataset
-  HANDLE_ERROR(cudaMalloc((void**)&s, sizeof(Sphere)*SPHERES));
 
   // allocate sphere memory on CPU, generate some random values
   Sphere *temp_s = (Sphere*)malloc(sizeof(Sphere)*SPHERES);
@@ -89,6 +89,9 @@ int main() {
     temp_s[i].radius = rnd(100.0f) + 20; 
   }
 
+  // copy data to CONSTANT MEMORY
+  HANDLE_ERROR(cudaMemcpyToSymbol(s, temp_s, sizeof(Sphere)*SPHERES));
+
   // copy Spheres data to GPU
   HANDLE_ERROR(cudaMemcpy(s, temp_s, sizeof(Sphere)*SPHERES, cudaMemcpyHostToDevice));
   free(temp_s);
@@ -101,7 +104,7 @@ int main() {
   // copy resulting image from GPU to CPU
   HANDLE_ERROR(cudaMemcpy(bitmap.get_ptr(), dev_bitmap, bitmap.image_size(), cudaMemcpyDeviceToHost));
   
-  // get stop time, and display the timing results
+  // get stop time, and display timing results
   HANDLE_ERROR(cudaEventRecord(stop, 0));
   HANDLE_ERROR(cudaEventSynchronize(stop));
   float elapsedTime;

@@ -8,7 +8,7 @@ nvcc -arch=sm_86 add_kernel.cu -o a && ./a
 ## For bitmap required examples
 ```bash
 sudo apt install freeglut3-dev
-nvcc julia_set_cpu.cu -o a -lglut -lGLU -lGL -lm && ./a
+nvcc ray_tracing.cu -o a.out -lglut -lGLU -lGL -lm && ./a.out
 ```
 
 ## For ripple example
