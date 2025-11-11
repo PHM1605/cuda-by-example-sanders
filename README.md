@@ -14,5 +14,5 @@ nvcc ray_tracing.cu -o a.out -lglut -lGLU -lGL -lm && ./a.out
 ## For ripple example
 ```bash
 sudo apt install freeglut3-dev libglu1-mesa-dev mesa-common-dev
-nvcc -arch=sm_86 heating.cu -o a.out -lglut -lGLU -lGL -lm && ./a.out
+nvcc -arch=sm_86 heating_texture.cu -o a.out -lglut -lGLU -lGL -lm && ./a.out
 ```

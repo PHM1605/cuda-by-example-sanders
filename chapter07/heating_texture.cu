@@ -23,7 +23,8 @@ __global__ void copy_const_kernel(float* iptr, cudaTextureObject_t texConst) {
 }
 
 // each thread (= each pixel) performs temperature calculation
-__global__ void blend_kernel(float *outSrc, const float *inSrc) {
+// dstOut: which buffer to fetch data, texture-input or texture-output
+__global__ void blend_kernel(float* dst, bool dstOut, cudaTextureObject_t texIn, cudaTextureObject_t texOut) {
   int x = threadIdx.x + blockIdx.x*blockDim.x;
   int y = threadIdx.y + blockIdx.y*blockDim.y;
   int offset = x + y*blockDim.x*gridDim.x;
@@ -37,7 +38,23 @@ __global__ void blend_kernel(float *outSrc, const float *inSrc) {
   int bottom = offset + DIM; // point below that location
   if (y==0) top += DIM; // point in first row => top=that point
   if (y==DIM-1) bottom -= DIM; // point in last row => below=that point
-  outSrc[offset] = inSrc[offset] + SPEED*(inSrc[top] + inSrc[bottom] + inSrc[left] + inSrc[right] - 4*inSrc[offset]);
+  
+  float t, l, c, r, b;
+  if (dstOut) {
+    t = tex1Dfetch<float>(texIn, top);
+    l = tex1Dfetch<float>(texIn, left);
+    c = tex1Dfetch<float>(texIn, offset);
+    r = tex1Dfetch<float>(texIn, right);
+    b = tex1Dfetch<float>(texIn, bottom);
+  } else {
+    t = tex1Dfetch<float>(texOut, top);
+    l = tex1Dfetch<float>(texOut, left);
+    c = tex1Dfetch<float>(texOut, offset);
+    r = tex1Dfetch<float>(texOut, right);
+    b = tex1Dfetch<float>(texOut, bottom);
+  }
+  
+  dst[offset] = c + SPEED*(t + b + r + l - 4*c);
 } 
 
 struct DataBlock {
@@ -48,7 +65,7 @@ struct DataBlock {
   CPUAnimBitmap *bitmap; // CPU
 
   // modern texture objects
-  cudaTextureObject_t textConstSrc;
+  cudaTextureObject_t texConstSrc;
   cudaTextureObject_t texIn;
   cudaTextureObject_t texOut;
 
@@ -57,17 +74,45 @@ struct DataBlock {
   float frames; // total number-of-frames up to now
 };
 
+// devPtr: pointer to list of float
+static cudaTextureObject_t makeLinearFloatTex(void* devPtr, size_t sizeInBytes) {
+  cudaResourceDesc resDesc = {};
+  resDesc.resType = cudaResourceTypeLinear;
+  resDesc.res.linear.devPtr = devPtr;
+  resDesc.res.linear.desc = cudaCreateChannelDesc<float>();
+  resDesc.res.linear.sizeInBytes = sizeInBytes;
+
+  cudaTextureDesc texDesc = {};
+  texDesc.readMode = cudaReadModeElementType;
+
+  cudaTextureObject_t tex = 0;
+  HANDLE_ERROR(cudaCreateTextureObject(&tex, &resDesc, &texDesc, nullptr));
+  return tex;
+}
+
 void anim_gpu(DataBlock *d, int ticks) {
   HANDLE_ERROR(cudaEventRecord(d->start, 0));
   dim3 blocks(DIM/16, DIM/16);
   dim3 threads(16, 16);
   CPUAnimBitmap* bitmap = d->bitmap;
 
+  volatile bool dstOut = true;
   for (int i=0; i<90; i++) {
-    copy_const_kernel<<<blocks,threads>>>(d->dev_inSrc, d->dev_constSrc);
-    blend_kernel<<<blocks,threads>>>(d->dev_outSrc, d->dev_inSrc);
-    swap(d->dev_inSrc, d->dev_outSrc); // <d->dev_inSrc> now used for next step; <d->dev_outSrc> is outdated  
+    float *in, *out;
+    if (dstOut) {
+      in = d->dev_inSrc;
+      out = d->dev_outSrc;
+    } else {
+      out = d->dev_inSrc;
+      in = d->dev_outSrc;
+    }
+    copy_const_kernel<<<blocks,threads>>>(in, d->texConstSrc); // keep SOME PIXELS as torch sources fixed; not overwritting entire grid but only some pixels
+    // if dstOut == True => <texIn> is important; otherwise <texOut>
+    blend_kernel<<<blocks,threads>>>(out, dstOut, d->texIn, d->texOut);
+    dstOut = !dstOut;
   }
+  
+
   float_to_color<<<blocks,threads>>>(d->output_bitmap, d->dev_inSrc); // from array of floats => color image
   // move resulting image from GPU to CPU
   HANDLE_ERROR(cudaMemcpy(bitmap->get_ptr(), d->output_bitmap, bitmap->image_size(), cudaMemcpyDeviceToHost));
@@ -85,7 +130,7 @@ void anim_gpu(DataBlock *d, int ticks) {
 void anim_exit(DataBlock* d) {
   cudaDestroyTextureObject(d->texIn);
   cudaDestroyTextureObject(d->texOut);
-  cudaDestroyTextureObject(d->textConstSrc);
+  cudaDestroyTextureObject(d->texConstSrc);
 
   HANDLE_ERROR(cudaFree(d->dev_inSrc));
   HANDLE_ERROR(cudaFree(d->dev_outSrc));
@@ -103,63 +148,68 @@ int main() {
   data.frames = 0;
   HANDLE_ERROR(cudaEventCreate(&data.start));
   HANDLE_ERROR(cudaEventCreate(&data.stop));
-  int imageSize = bitmap.image_size();
+
+  const size_t RGBA_BYTES = bitmap.image_size(); // DIM*DIM*4
+  const size_t GRID_BYTES = DIM*DIM*sizeof(float); // DIM*DIM*size(float)
 
   // allocate memory for output bitmap on GPU
-  HANDLE_ERROR(cudaMalloc((void**)&data.output_bitmap, imageSize));
-
-  HANDLE_ERROR(cudaMalloc((void**)&data.dev_inSrc, DIM*DIM*sizeof(float))); // 1 float = 4 bytes
-  HANDLE_ERROR(cudaMalloc((void**)&data.dev_outSrc, DIM*DIM*sizeof(float)));
-  HANDLE_ERROR(cudaMalloc((void**)&data.dev_constSrc, DIM*DIM*sizeof(float)));
+  HANDLE_ERROR(cudaMalloc((void**)&data.output_bitmap, RGBA_BYTES));
+  HANDLE_ERROR(cudaMalloc((void**)&data.dev_inSrc, GRID_BYTES));
+  HANDLE_ERROR(cudaMalloc((void**)&data.dev_outSrc, GRID_BYTES));
+  HANDLE_ERROR(cudaMalloc((void**)&data.dev_constSrc, GRID_BYTES));
 
   // fill a random CPU bitmap
-  float *temp = (float*)malloc(DIM*DIM*sizeof(float));
+  float *temp = (float*)malloc(GRID_BYTES);
   for (int i=0; i<DIM*DIM; ++i) 
     temp[i] = 0.0f;
 
   // rectangle of heat: row [311,600]; col [301,599]
-  
   for (int i=0; i<DIM*DIM; i++) {
     temp[i] = 0; // temp[0]: first 4 bytes; temp[1]: second 4 bytes; ...
-    // int x = i%DIM;
-    // int y = i/DIM;
-
-    // Set the map of heat
-    // x: [300,610]; y: [310,600]
-    for (int y=310; y<601; y++) {
-      for (int x=300; x<=610; x++) {
-        temp[y*DIM+x] = MAX_TEMP;
-      }
-    }
-    
-    // Single hot points
-    temp[DIM*100+100] = (MAX_TEMP+MIN_TEMP)/2.0f;
-    temp[DIM*700+100] = MIN_TEMP;
-    temp[DIM*300+300] = MIN_TEMP;
-    temp[DIM*200+700] = MIN_TEMP;
-    // row [801:899]; col [401:499]
-    for (int y=800; y<900; y++){
-      for (int x=400; x<500; x++) {
-        temp[x+y*DIM] = MIN_TEMP;
-      }
-    }
-    HANDLE_ERROR(cudaMemcpy(data.dev_constSrc, temp, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice));
-
-    // Set another map of heat
-    // row [800:1023] col[0:199]
-    for (int y=0; y<DIM; y++) {
-      for (int x=0; x<200; x++) {
-        temp[x+y*DIM] = MAX_TEMP;
-      }
-    }
-    HANDLE_ERROR(cudaMemcpy(data.dev_inSrc, temp, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice));
-
-    free(temp);
-    bitmap.anim_and_exit(
-      (void (*)(void*, int))anim_gpu,
-      (void (*)(void*))anim_exit
-    );
   }
 
+  // Set the map of heat
+  // x: [300,610]; y: [310,600]
+  for (int y=310; y<601; y++) {
+    for (int x=300; x<=610; x++) {
+      temp[y*DIM+x] = MAX_TEMP;
+    }
+  }
+    
+  // Single hot points
+  temp[DIM*100+100] = (MAX_TEMP+MIN_TEMP)/2.0f;
+  temp[DIM*700+100] = MIN_TEMP;
+  temp[DIM*300+300] = MIN_TEMP;
+  temp[DIM*200+700] = MIN_TEMP;
+  // row [801:899]; col [401:499]
+  for (int y=800; y<900; y++){
+    for (int x=400; x<500; x++) {
+      temp[x+y*DIM] = MIN_TEMP;
+    }
+  }
+  HANDLE_ERROR(cudaMemcpy(data.dev_constSrc, temp, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice));
+
+  // Set another map of heat
+  // row [800:1023] col[0:199]
+  for (int y=800; y<DIM; y++) {
+    for (int x=0; x<200; x++) {
+      temp[x+y*DIM] = MAX_TEMP;
+    }
+  }
+  HANDLE_ERROR(cudaMemcpy(data.dev_inSrc, temp, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice));
+  // clear outSrc
+  HANDLE_ERROR(cudaMemset(data.dev_outSrc, 0, GRID_BYTES));
+
+  free(temp);
+
+  // create texture objects
+  data.texConstSrc = makeLinearFloatTex(data.dev_constSrc, GRID_BYTES);
+  data.texIn = makeLinearFloatTex(data.dev_inSrc, GRID_BYTES);
+  data.texOut = makeLinearFloatTex(data.dev_outSrc, GRID_BYTES);
+
+  bitmap.anim_and_exit(
+    (void (*)(void*, int))anim_gpu,
+    (void (*)(void*))anim_exit
+  );
   return 0;
 }
