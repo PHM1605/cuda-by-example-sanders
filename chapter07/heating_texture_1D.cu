@@ -8,7 +8,7 @@
 #define MIN_TEMP 0.0001f
 #define SPEED 0.25f
 
-// copy constant grid into input grid
+// copy SOME PIXELS in constant grid into input grid
 __global__ void copy_const_kernel(float* iptr, cudaTextureObject_t texConst) {
   // map from threadIdx & blockIdx to pixel position
   int x = threadIdx.x + blockIdx.x * blockDim.x;
@@ -163,11 +163,6 @@ int main() {
   for (int i=0; i<DIM*DIM; ++i) 
     temp[i] = 0.0f;
 
-  // rectangle of heat: row [311,600]; col [301,599]
-  for (int i=0; i<DIM*DIM; i++) {
-    temp[i] = 0; // temp[0]: first 4 bytes; temp[1]: second 4 bytes; ...
-  }
-
   // Set the map of heat
   // x: [300,610]; y: [310,600]
   for (int y=310; y<601; y++) {
@@ -187,7 +182,7 @@ int main() {
       temp[x+y*DIM] = MIN_TEMP;
     }
   }
-  HANDLE_ERROR(cudaMemcpy(data.dev_constSrc, temp, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice));
+  HANDLE_ERROR(cudaMemcpy(data.dev_constSrc, temp, GRID_BYTES, cudaMemcpyHostToDevice));
 
   // Set another map of heat
   // row [800:1023] col[0:199]
@@ -196,7 +191,7 @@ int main() {
       temp[x+y*DIM] = MAX_TEMP;
     }
   }
-  HANDLE_ERROR(cudaMemcpy(data.dev_inSrc, temp, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice));
+  HANDLE_ERROR(cudaMemcpy(data.dev_inSrc, temp, GRID_BYTES, cudaMemcpyHostToDevice));
   // clear outSrc
   HANDLE_ERROR(cudaMemset(data.dev_outSrc, 0, GRID_BYTES));
 
