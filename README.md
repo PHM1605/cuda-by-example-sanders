@@ -2,7 +2,7 @@
 
 ## Run example
 ```bash
-nvcc -arch=sm_86 add_kernel.cu -o a && ./a
+nvcc -arch=sm_86 double_stream.cu -o a && ./a
 ```
 
 ## For bitmap required examples

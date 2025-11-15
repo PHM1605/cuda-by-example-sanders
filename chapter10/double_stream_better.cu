@@ -63,15 +63,17 @@ int main() {
   
   // go over full data 20MB in SMALLER CHUNKS of 1MB each x2 streams
   for (int i=0; i<FULL_DATA_SIZE; i+=N*2) {
-    // push/execute/pull to/from stream0
-    HANDLE_ERROR(cudaMemcpyAsync(dev_a0, host_a+i, N*sizeof(int), cudaMemcpyHostToDevice, stream0)); // async 1
-    HANDLE_ERROR(cudaMemcpyAsync(dev_b0, host_b+i, N*sizeof(int), cudaMemcpyHostToDevice, stream0)); // async 2
-    kernel<<<N/256,256,0,stream0>>>(dev_a0, dev_b0, dev_c0); // async 3
-    HANDLE_ERROR(cudaMemcpyAsync(host_c+i, dev_c0, N*sizeof(int), cudaMemcpyDeviceToHost, stream0)); // async 4
-    // push/execute/pull to/from stream1
+    // copy <a> stream0 and stream1
+    HANDLE_ERROR(cudaMemcpyAsync(dev_a0, host_a+i, N*sizeof(int), cudaMemcpyHostToDevice, stream0));
     HANDLE_ERROR(cudaMemcpyAsync(dev_a1, host_a+i+N, N*sizeof(int), cudaMemcpyHostToDevice, stream1));
+    // copy <b> to stream0 and stream1
+    HANDLE_ERROR(cudaMemcpyAsync(dev_b0, host_b+i, N*sizeof(int), cudaMemcpyHostToDevice, stream0)); 
     HANDLE_ERROR(cudaMemcpyAsync(dev_b1, host_b+i+N, N*sizeof(int), cudaMemcpyHostToDevice, stream1));
+    // enqueue to stream0 and stream1
+    kernel<<<N/256,256,0,stream0>>>(dev_a0, dev_b0, dev_c0);
     kernel<<<N/256,256,0,stream1>>>(dev_a1, dev_b1, dev_c1);
+    // copy <c> back to pinned-memory on CPU on BOTH streams
+    HANDLE_ERROR(cudaMemcpyAsync(host_c+i, dev_c0, N*sizeof(int), cudaMemcpyDeviceToHost, stream0)); 
     HANDLE_ERROR(cudaMemcpyAsync(host_c+i+N, dev_c1, N*sizeof(int), cudaMemcpyDeviceToHost, stream1));
   }
   // copy result from <pinned-buffer> to normal CPU buffer
