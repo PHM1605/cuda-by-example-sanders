@@ -17,9 +17,11 @@ struct Lock {
   __device__ void lock(void) {
     // CAS: Compare And Swap
     // check: position at position <mutex> equals <0> or not. If yes then set to <1>
-    // atomicCAS() returns the original value. 
-    // <mutex>=0 means NOT LOCK; <mutex>=1 means LOCK
+    // atomicCAS() returns the original value at <*mutex> 
+    // <*mutex>=0 means FREE; <mutex>=1 means LOCKED
+  #ifdef __CUDA_ARCH__
     while(atomicCAS(mutex, 0, 1) != 0);
+  #endif
   }
 };
 
