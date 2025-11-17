@@ -41,6 +41,7 @@ __global__ void dot(int size, float *a, float *b, float *c) {
 struct DataStruct {
   int deviceID;
   int size;
+  int offset;
   float *a;
   float *b;
   float returnValue;
@@ -48,7 +49,13 @@ struct DataStruct {
 
 void* routine(void *pvoidData) {
   DataStruct *data = (DataStruct*)pvoidData;
-  HANDLE_ERROR(cudaSetDevice(data->deviceID));
+  // We have already set Device 0 when set PORTABLE host memory
+  if (data->deviceID != 0) {
+    // host PORTABLE PINNED memory for device 1
+    HANDLE_ERROR(cudaSetDevice(data->deviceID)); 
+    HANDLE_ERROR(cudaSetDeviceFlags(cudaDeviceMapHost)); 
+  }
+  
   int size = data->size; // N/2 if we use 2 GPUs
   float *a, *b, c, *partial_c;
   float *dev_a, *dev_b, *dev_partial_c;
@@ -56,13 +63,15 @@ void* routine(void *pvoidData) {
   a = data->a;
   b = data->b;
   partial_c = (float*)malloc(blocksPerGrid*sizeof(float)); // (number-of-blocks,) floats
-  // GPU side
-  HANDLE_ERROR(cudaMalloc((void**)&dev_a, size*sizeof(float)));
-  HANDLE_ERROR(cudaMalloc((void**)&dev_b, size*sizeof(float)));
+  // CPU side but PORTABLE-PINNED
+  HANDLE_ERROR(cudaHostGetDevicePointer(&dev_a, a, 0));
+  HANDLE_ERROR(cudaHostGetDevicePointer(&dev_b, b, 0));
+  // GPU side 
   HANDLE_ERROR(cudaMalloc((void**)&dev_partial_c, blocksPerGrid*sizeof(float)));
-  // copy arrays <a> and <b> to GPU
-  HANDLE_ERROR(cudaMemcpy(dev_a, a, size*sizeof(float), cudaMemcpyHostToDevice));
-  HANDLE_ERROR(cudaMemcpy(dev_b, b, size*sizeof(float), cudaMemcpyHostToDevice));
+  
+  dev_a += data->offset;
+  dev_b += data->offset;
+
   // kernel execution
   dot<<<blocksPerGrid, threadsPerBlock>>>(size, dev_a, dev_b, dev_partial_c);
   // copy <c> back to CPU
@@ -73,8 +82,6 @@ void* routine(void *pvoidData) {
     c += partial_c[i];
   }
   // clean up
-  HANDLE_ERROR(cudaFree(dev_a));
-  HANDLE_ERROR(cudaFree(dev_b));
   HANDLE_ERROR(cudaFree(dev_partial_c));
   free(partial_c);
   data->returnValue = c;
@@ -89,12 +96,31 @@ int main() {
     return 0;
   }
 
-  // allocate and fill CPU with data
-  float *a = (float*)malloc(sizeof(float)*N);
-  HANDLE_NULL(a);
-  float *b = (float*)malloc(sizeof(float)*N);
-  HANDLE_NULL(b);
-  
+  // check if pinned-memory support
+  cudaDeviceProp prop;
+  for (int i=0; i<2; i++) {
+    HANDLE_ERROR(cudaGetDeviceProperties(&prop, i));
+    if (prop.canMapHostMemory != 1) {
+      printf("Device %d cannot map memory.\n", i);
+      return 0;
+    }
+  }
+
+  // before setting PORTABLE host memory, we must set 1 of the 2 CUDA device
+  float *a, *b;
+  HANDLE_ERROR(cudaSetDevice(0));
+  HANDLE_ERROR(cudaSetDeviceFlags(cudaDeviceMapHost));
+  HANDLE_ERROR(cudaHostAlloc(
+    (void**)&a, 
+    N*sizeof(float),
+    cudaHostAllocWriteCombined | cudaHostAllocPortable | cudaHostAllocMapped
+  ));
+  HANDLE_ERROR(cudaHostAlloc(
+    (void**)&b,
+    N*sizeof(float),
+    cudaHostAllocWriteCombined | cudaHostAllocPortable | cudaHostAllocMapped
+  ));
+  // fill PORTABLE memory with data
   for (int i=0; i<N; i++) {
     a[i] = i;
     b[i] = i*2;
@@ -103,29 +129,32 @@ int main() {
   // Setup 2 GPUs
   DataStruct data[2];
   data[0].deviceID = 0;
+  data[0].offset = 0;
   data[0].size = N/2;
   data[0].a = a;
   data[0].b = b;
+
   data[1].deviceID = 1;
+  data[1].offset = N/2;
   data[1].size = N/2;
-  data[1].a = a + N/2;
-  data[1].b = b + N/2;
+  data[1].a = a;
+  data[1].b = b;
 
   // timer
   auto t0 = std::chrono::high_resolution_clock::now();
 
   // Each GPU is managed by 1 CPU thread
-  CUTThread thread = start_thread(routine, &(data[0])); // default thread
-  routine(&(data[1])); // one additional thread
+  CUTThread thread = start_thread(routine, &(data[1])); // default thread
+  routine(&(data[0])); // one additional thread
   end_thread(thread); // main thread waits for the other thread to finish
 
   // timer stop
   auto t1 = std::chrono::high_resolution_clock::now();
   double elapsedTime = std::chrono::duration<double, std::milli>(t1-t0).count();
 
-  // clean up and display result
-  free(a);
-  free(b);
+  // clean up PORTABLE-PINNED and display result
+  HANDLE_ERROR(cudaFreeHost(a));
+  HANDLE_ERROR(cudaFreeHost(b));
   printf("Value calculated: %f\n", data[0].returnValue+data[1].returnValue);
   printf("Time elapsed: %3.1f ms\n", elapsedTime);
 
