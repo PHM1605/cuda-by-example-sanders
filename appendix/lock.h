@@ -1,13 +1,16 @@
 #ifndef __LOCK_H__
 #define __LOCK_H__
 
+#include "../common/book.h"
 #include <cuda_runtime.h>
 
 struct Lock {
   int *mutex;
 
   Lock(void) {
-
+    int state = 0;
+    HANDLE_ERROR(cudaMalloc((void**)&mutex, sizeof(int)));
+    HANDLE_ERROR(cudaMemcpy(mutex, &state, sizeof(int), cudaMemcpyHostToDevice));
   }
 
   ~Lock(void) {
@@ -22,6 +25,12 @@ struct Lock {
   #ifdef __CUDA_ARCH__
     while(atomicCAS(mutex, 0, 1) != 0);
   #endif
+  }
+
+  __device__ void unlock() {
+#ifdef __CUDA_ARCH__
+    atomicExch(mutex, 0);
+#endif
   }
 };
 
