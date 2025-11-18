@@ -2,7 +2,7 @@
 
 ## Run example
 ```bash
-nvcc -arch=sm_86 multi_gpus.cu -o a && ./a
+nvcc -arch=sm_86 hash_cpu.cu -o a && ./a
 ```
 
 ## For bitmap required examples
