@@ -19,4 +19,4 @@ nvcc -arch=sm_86 heat.cu -o a.out -lglut -lGLU -lGL -lm && ./a.out
 
 Appendix mutex lock not work. \
 fail for big data. \
-hence here I must change to small data. \
+hence here I must change to small data. 
