@@ -1,8 +1,8 @@
 #include "../common/book.h"
 #include "lock.h"
 
-#define HASH_ENTRIES 10 // number of buckets
-#define SIZE (1024) // total size of all random numbers generated
+#define HASH_ENTRIES 1024 // number of buckets
+#define SIZE (10*1024*1024) // total size of all random numbers generated
 #define ELEMENTS (SIZE/sizeof(unsigned int)) // number of random numbers generated
 
 struct Entry {
@@ -102,6 +102,8 @@ __global__ void add_to_table(unsigned int *keys, void **values, Table table, Loc
         lock[hashValue].lock();
         location->next = table.entries[hashValue];
         table.entries[hashValue] = location;
+        // NOTE: ensure that <location> fully written - avoid racing
+        __threadfence();
         lock[hashValue].unlock();
       }
     }
@@ -125,6 +127,7 @@ int main() {
 
   // 1 lock for each bucket on table; on GPU
   Lock lock[HASH_ENTRIES];
+  // memset(lock, 0, HASH_ENTRIES*sizeof(Lock));
   Lock *dev_lock;
   HANDLE_ERROR(cudaMalloc((void**)&dev_lock, HASH_ENTRIES*sizeof(Lock)));
   HANDLE_ERROR(cudaMemcpy(dev_lock, lock, HASH_ENTRIES*sizeof(Lock), cudaMemcpyHostToDevice));
